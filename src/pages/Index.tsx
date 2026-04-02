@@ -1,6 +1,15 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Icon from '@/components/ui/icon';
 import { politicians, Politician, Law } from '@/data/politicians';
+
+const VOTE_URL = 'https://functions.poehali.dev/9250ac35-2a1f-44b6-9e78-68fd1f622283';
+
+interface LiveRating {
+  up: number;
+  down: number;
+  total: number;
+  rating: number;
+}
 
 type Tab = 'ratings' | 'laws' | 'profiles' | 'analytics';
 
@@ -10,7 +19,35 @@ export default function Index() {
   const [selectedLaw, setSelectedLaw] = useState<Law | null>(null);
   const [commentText, setCommentText] = useState('');
   const [localVotes, setLocalVotes] = useState<Record<number, { up: number; down: number; voted?: 'up' | 'down' }>>({});
-  const [ratingVotes, setRatingVotes] = useState<Record<number, 'up' | 'down' | null>>({});
+  const [liveRatings, setLiveRatings] = useState<Record<string, LiveRating>>({});
+  const [myVotes, setMyVotes] = useState<Record<number, 'up' | 'down' | null>>({});
+  const [votingLoading, setVotingLoading] = useState<Record<number, boolean>>({});
+
+  const fetchRatings = useCallback(async () => {
+    try {
+      const res = await fetch(VOTE_URL);
+      const data = await res.json();
+      setLiveRatings(data);
+    } catch (e) {
+      console.error('Failed to fetch ratings', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRatings();
+  }, [fetchRatings]);
+
+  const getRating = (p: Politician) => {
+    const live = liveRatings[String(p.id)];
+    if (live && live.total > 0) return live.rating;
+    return p.approvalRating;
+  };
+
+  const getVoteCount = (p: Politician) => {
+    const live = liveRatings[String(p.id)];
+    if (live && live.total > 0) return live.total;
+    return p.totalVotes;
+  };
 
   const handleVote = (lawId: number, type: 'up' | 'down') => {
     setLocalVotes(prev => {
@@ -27,11 +64,34 @@ export default function Index() {
     });
   };
 
-  const handleRatingVote = (politicianId: number, type: 'up' | 'down') => {
-    setRatingVotes(prev => ({ ...prev, [politicianId]: prev[politicianId] === type ? null : type }));
+  const handleRatingVote = async (politicianId: number, type: 'up' | 'down') => {
+    if (votingLoading[politicianId]) return;
+    setVotingLoading(prev => ({ ...prev, [politicianId]: true }));
+    try {
+      const res = await fetch(VOTE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ politician_id: politicianId, vote_type: type }),
+      });
+      const data = await res.json();
+      setMyVotes(prev => ({ ...prev, [politicianId]: data.my_vote }));
+      setLiveRatings(prev => ({
+        ...prev,
+        [String(politicianId)]: {
+          up: data.up,
+          down: data.down,
+          total: data.total,
+          rating: data.rating,
+        },
+      }));
+    } catch (e) {
+      console.error('Vote failed', e);
+    } finally {
+      setVotingLoading(prev => ({ ...prev, [politicianId]: false }));
+    }
   };
 
-  const sortedByRating = [...politicians].sort((a, b) => b.approvalRating - a.approvalRating);
+  const sortedByRating = [...politicians].sort((a, b) => getRating(b) - getRating(a));
   const allLaws = politicians.flatMap(p => p.laws.map(l => ({ ...l, politician: p })));
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -58,7 +118,11 @@ export default function Index() {
           <div className="flex items-center gap-2">
             <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/10 border border-accent/20">
               <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-              <span className="text-xs text-accent font-medium">298 458 голосов</span>
+              <span className="text-xs text-accent font-medium">
+                {Object.values(liveRatings).reduce((s, r) => s + r.total, 0) > 0
+                  ? `${Object.values(liveRatings).reduce((s, r) => s + r.total, 0).toLocaleString()} голосов`
+                  : 'Голосование открыто'}
+              </span>
             </div>
             <button className="w-9 h-9 rounded-lg border border-border hover:border-primary/50 flex items-center justify-center transition-colors">
               <Icon name="Bell" size={16} className="text-muted-foreground" />
@@ -117,18 +181,18 @@ export default function Index() {
                   <p className="text-xs text-muted-foreground mt-0.5 mb-3">{p.position}</p>
                   <div className="space-y-1.5">
                     <div className="flex justify-between items-center">
-                      <span className={`text-lg font-oswald font-bold ${p.approvalRating >= 60 ? 'neon-green-text' : p.approvalRating >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
-                        {p.approvalRating}%
+                      <span className={`text-lg font-oswald font-bold ${getRating(p) >= 60 ? 'neon-green-text' : getRating(p) >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
+                        {getRating(p)}%
                       </span>
-                      <span className={`text-xs flex items-center gap-1 ${p.trend === 'up' ? 'text-green-400' : p.trend === 'down' ? 'text-red-400' : 'text-muted-foreground'}`}>
-                        <Icon name={p.trend === 'up' ? 'TrendingUp' : p.trend === 'down' ? 'TrendingDown' : 'Minus'} size={12} />
-                        {p.trendValue > 0 ? `+${p.trendValue}` : p.trendValue}%
+                      <span className="text-xs flex items-center gap-1 text-muted-foreground">
+                        <Icon name="Users" size={12} />
+                        {getVoteCount(p).toLocaleString()}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
                       <div
-                        className={`h-full rounded-full rating-bar-fill ${p.approvalRating >= 60 ? 'bg-accent' : p.approvalRating >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
-                        style={{ width: `${p.approvalRating}%` }}
+                        className={`h-full rounded-full rating-bar-fill ${getRating(p) >= 60 ? 'bg-accent' : getRating(p) >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
+                        style={{ width: `${getRating(p)}%` }}
                       />
                     </div>
                   </div>
@@ -151,32 +215,34 @@ export default function Index() {
                         <p className="text-xs text-muted-foreground">{p.position} · {p.region}</p>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <div className={`font-oswald font-bold text-xl ${p.approvalRating >= 60 ? 'neon-green-text' : p.approvalRating >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
-                          {p.approvalRating}%
+                        <div className={`font-oswald font-bold text-xl ${getRating(p) >= 60 ? 'neon-green-text' : getRating(p) >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
+                          {getRating(p)}%
                         </div>
-                        <div className={`text-xs flex items-center justify-end gap-0.5 ${p.trend === 'up' ? 'text-green-400' : p.trend === 'down' ? 'text-red-400' : 'text-muted-foreground'}`}>
-                          <Icon name={p.trend === 'up' ? 'TrendingUp' : p.trend === 'down' ? 'TrendingDown' : 'Minus'} size={11} />
-                          {p.trendValue > 0 ? `+${p.trendValue}` : p.trendValue}%
+                        <div className="text-xs flex items-center justify-end gap-0.5 text-muted-foreground">
+                          <Icon name="Users" size={11} />
+                          {getVoteCount(p).toLocaleString()}
                         </div>
                       </div>
                     </div>
                     <div className="mt-2 h-1.5 rounded-full bg-secondary overflow-hidden">
                       <div
-                        className={`h-full rounded-full ${p.approvalRating >= 60 ? 'bg-accent' : p.approvalRating >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
-                        style={{ width: `${p.approvalRating}%` }}
+                        className={`h-full rounded-full ${getRating(p) >= 60 ? 'bg-accent' : getRating(p) >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
+                        style={{ width: `${getRating(p)}%` }}
                       />
                     </div>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <button
                       onClick={() => handleRatingVote(p.id, 'up')}
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${ratingVotes[p.id] === 'up' ? 'bg-accent/20 border border-accent text-accent' : 'border border-border hover:border-accent/50 text-muted-foreground hover:text-accent'}`}
+                      disabled={votingLoading[p.id]}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${myVotes[p.id] === 'up' ? 'bg-accent/20 border border-accent text-accent' : 'border border-border hover:border-accent/50 text-muted-foreground hover:text-accent'} disabled:opacity-50`}
                     >
-                      <Icon name="ThumbsUp" size={15} />
+                      {votingLoading[p.id] ? <Icon name="Loader" size={14} className="animate-spin" /> : <Icon name="ThumbsUp" size={15} />}
                     </button>
                     <button
                       onClick={() => handleRatingVote(p.id, 'down')}
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${ratingVotes[p.id] === 'down' ? 'bg-destructive/20 border border-destructive text-destructive' : 'border border-border hover:border-destructive/50 text-muted-foreground hover:text-destructive'}`}
+                      disabled={votingLoading[p.id]}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${myVotes[p.id] === 'down' ? 'bg-destructive/20 border border-destructive text-destructive' : 'border border-border hover:border-destructive/50 text-muted-foreground hover:text-destructive'} disabled:opacity-50`}
                     >
                       <Icon name="ThumbsDown" size={15} />
                     </button>
@@ -399,8 +465,8 @@ export default function Index() {
                   <div className="h-32 bg-gradient-to-br from-primary/10 to-accent/5 relative">
                     <img src={p.photo} alt={p.name} className="absolute bottom-0 left-4 w-20 h-20 rounded-xl object-cover border-2 border-card" />
                     <div className="absolute top-3 right-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${p.approvalRating >= 60 ? 'bg-accent/20 text-accent' : p.approvalRating >= 45 ? 'bg-yellow-400/20 text-yellow-400' : 'bg-destructive/20 text-destructive'}`}>
-                        {p.approvalRating}%
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getRating(p) >= 60 ? 'bg-accent/20 text-accent' : getRating(p) >= 45 ? 'bg-yellow-400/20 text-yellow-400' : 'bg-destructive/20 text-destructive'}`}>
+                        {getRating(p)}%
                       </span>
                     </div>
                   </div>
@@ -456,10 +522,10 @@ export default function Index() {
                     <p className="text-primary text-sm">{selectedPolitician.party} · {selectedPolitician.region}</p>
                   </div>
                   <div className="text-right">
-                    <div className={`font-oswald text-3xl font-bold ${selectedPolitician.approvalRating >= 60 ? 'neon-green-text' : selectedPolitician.approvalRating >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
-                      {selectedPolitician.approvalRating}%
+                    <div className={`font-oswald text-3xl font-bold ${getRating(selectedPolitician) >= 60 ? 'neon-green-text' : getRating(selectedPolitician) >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
+                      {getRating(selectedPolitician)}%
                     </div>
-                    <div className="text-xs text-muted-foreground">{selectedPolitician.totalVotes.toLocaleString()} голосов</div>
+                    <div className="text-xs text-muted-foreground">{getVoteCount(selectedPolitician).toLocaleString()} голосов</div>
                   </div>
                 </div>
                 <p className="mt-4 text-sm text-muted-foreground">{selectedPolitician.bio}</p>
@@ -543,8 +609,8 @@ export default function Index() {
               {[
                 { label: 'Всего политиков', value: politicians.length, sub: 'в базе', icon: 'Users', color: 'text-primary' },
                 { label: 'Законов в базе', value: allLaws.length, sub: 'за 2023–2024', icon: 'ScrollText', color: 'text-accent' },
-                { label: 'Голосов подано', value: '298K', sub: 'гражданами', icon: 'Vote', color: 'text-yellow-400' },
-                { label: 'Средний рейтинг', value: `${Math.round(politicians.reduce((s, p) => s + p.approvalRating, 0) / politicians.length)}%`, sub: 'одобрения', icon: 'Star', color: 'neon-green-text' },
+                { label: 'Голосов подано', value: Object.values(liveRatings).reduce((s, r) => s + r.total, 0) > 0 ? Object.values(liveRatings).reduce((s, r) => s + r.total, 0).toLocaleString() : '0', sub: 'гражданами', icon: 'Vote', color: 'text-yellow-400' },
+                { label: 'Средний рейтинг', value: `${Math.round(politicians.reduce((s, p) => s + getRating(p), 0) / politicians.length)}%`, sub: 'одобрения', icon: 'Star', color: 'neon-green-text' },
               ].map(s => (
                 <div key={s.label} className="card-glow rounded-2xl bg-card p-5">
                   <Icon name={s.icon} size={22} className={s.color} />
@@ -566,14 +632,14 @@ export default function Index() {
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-center mb-1">
                         <span className="text-sm font-medium truncate">{p.name}</span>
-                        <span className={`text-sm font-oswald font-bold ml-2 ${p.approvalRating >= 60 ? 'neon-green-text' : p.approvalRating >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
-                          {p.approvalRating}%
+                        <span className={`text-sm font-oswald font-bold ml-2 ${getRating(p) >= 60 ? 'neon-green-text' : getRating(p) >= 45 ? 'text-yellow-400' : 'neon-red-text'}`}>
+                          {getRating(p)}%
                         </span>
                       </div>
                       <div className="h-2 rounded-full bg-secondary overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all duration-1000 ${p.approvalRating >= 60 ? 'bg-accent' : p.approvalRating >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
-                          style={{ width: `${p.approvalRating}%` }}
+                          className={`h-full rounded-full transition-all duration-1000 ${getRating(p) >= 60 ? 'bg-accent' : getRating(p) >= 45 ? 'bg-yellow-400' : 'bg-destructive'}`}
+                          style={{ width: `${getRating(p)}%` }}
                         />
                       </div>
                     </div>

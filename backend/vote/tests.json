@@ -1,0 +1,17 @@
+{
+  "tests": [
+    {
+      "name": "GET ratings",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "POST vote up",
+      "method": "POST",
+      "path": "/",
+      "body": { "politician_id": 1, "vote_type": "up" },
+      "expectedStatus": 200
+    }
+  ]
+}
